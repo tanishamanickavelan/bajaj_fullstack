@@ -1,200 +1,198 @@
-import express from 'express';
-import cors from 'cors';
+const express = require("express");
+const cors = require("cors");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const NAME = "tanisha";
-const EMAIL = "tm6668@srmist.edu.in";
-const ROLL = "RA2311050010038";
-const USER_ID = `${NAME}_24042026`; // or ddmmyyyy today
+// ── Identity — replace with your actual details ──────────────────────────────
+const USER_ID = "tanisha_24042026"; // fullname_ddmmyyyy  ← change DOB if needed
+const EMAIL_ID = "tm6668@srmist.edu.in";
+const COLLEGE_ROLL_NUMBER = "RA2311050010038";
+// ─────────────────────────────────────────────────────────────────────────────
 
-function validateEntry(str) {
-  let entry = str.trim();
-  if (!entry.match(/^[A-Z]->[A-Z]$/)) return false;
-  // Self-loop
-  if (entry[0] === entry[3]) return false;
-  return true;
+function isValidEntry(raw) {
+  const s = raw.trim();
+  // Must match exactly X->Y where X,Y are single uppercase letters, X≠Y
+  return /^[A-Z]->[A-Z]$/.test(s) && s[0] !== s[3];
 }
 
-// Parse and process all data
-function processData(data) {
-  let validEdges = [];
-  let invalid_entries = [], duplicate_edges = [];
-  let edgeSet = new Set();
-  let childToParent = new Map(); // for multi-parent
-  let parentToChildren = new Map();
+function buildHierarchies(validEdges) {
+  // Track parent→children (first-parent-wins for diamond case)
+  const children = {}; // parent -> [child, ...]
+  const parentOf = {};  // child  -> parent (first encounter)
 
-  // Step 1: Parse and validate entries, detect duplicates
-  for (let raw of data) {
-    const s = raw.trim();
-    if (!validateEntry(s))
-      { invalid_entries.push(raw); continue; }
+  for (const edge of validEdges) {
+    const [p, c] = edge.split("->"); // already validated: single chars
+    if (!children[p]) children[p] = [];
+    if (!children[c]) children[c] = []; // ensure node exists
 
-    if (edgeSet.has(s))
-      { if (!duplicate_edges.includes(s)) duplicate_edges.push(s); continue; }
-
-    const [parent, child] = [s[0], s[3]];
-    // Multi-parent: Only first wins
-    if (childToParent.has(child)) continue;
-
-    validEdges.push([parent, child]);
-    edgeSet.add(s);
-    childToParent.set(child, parent);
-
-    if (!parentToChildren.has(parent)) parentToChildren.set(parent, []);
-    parentToChildren.get(parent).push(child);
+    if (parentOf[c] !== undefined) {
+      // Node already has a parent → discard this edge (diamond/multi-parent rule)
+      continue;
+    }
+    parentOf[c] = p;
+    children[p].push(c);
   }
 
-  // Step 2: Build all groups (tree or cyclic)
-  // Find all nodes
-  let allNodes = new Set();
-  validEdges.forEach(([p, c]) => { allNodes.add(p); allNodes.add(c); });
+  // All nodes mentioned
+  const allNodes = new Set([...Object.keys(children), ...Object.keys(parentOf)]);
 
-  // Set of all children
-  let children = new Set(validEdges.map(([p, c]) => c));
-  // Roots are nodes that never appear as child
-  let roots = [...allNodes].filter(x => !children.has(x));
-  let visited = new Set();
-  let groups = [];
+  // Find connected groups via Union-Find
+  const uf = {};
+  function find(x) {
+    if (uf[x] === undefined) uf[x] = x;
+    if (uf[x] !== x) uf[x] = find(uf[x]);
+    return uf[x];
+  }
+  function union(a, b) {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) uf[ra] = rb;
+  }
 
-  // Build connected groups: for each unvisited node, BFS/DFS
-  let nodeToEdges = {};
-  validEdges.forEach(([p, c]) => {
-    if (!nodeToEdges[p]) nodeToEdges[p] = [];
-    nodeToEdges[p].push(c);
-    if (!nodeToEdges[c]) nodeToEdges[c] = [];
-  });
+  for (const edge of validEdges) {
+    const [p, c] = edge.split("->");
+    union(p, c);
+  }
 
-  function groupDFS(start, currGroup) {
-    if (!visited.has(start)) {
-      visited.add(start);
-      currGroup.push(start);
-      for (let child of (nodeToEdges[start]||[])) {
-        groupDFS(child, currGroup);
+  // Group nodes by component
+  const groups = {};
+  for (const node of allNodes) {
+    const root = find(node);
+    if (!groups[root]) groups[root] = new Set();
+    groups[root].add(node);
+  }
+
+  const hierarchies = [];
+
+  for (const group of Object.values(groups)) {
+    const nodes = [...group];
+
+    // Detect cycle: DFS within the group using children map
+    // (after multi-parent discard, each node has at most one parent)
+    let hasCycle = false;
+    const visited = new Set();
+    const inStack = new Set();
+
+    function dfs(node) {
+      if (inStack.has(node)) { hasCycle = true; return; }
+      if (visited.has(node)) return;
+      visited.add(node);
+      inStack.add(node);
+      for (const child of (children[node] || [])) {
+        dfs(child);
+        if (hasCycle) return;
       }
+      inStack.delete(node);
     }
-  }
-  // cover all components
-  for (let node of allNodes) {
-    if (!visited.has(node)) {
-      let currGroup = [];
-      groupDFS(node, currGroup);
-      if (currGroup.length) groups.push(currGroup);
+
+    for (const node of nodes) {
+      if (!visited.has(node)) dfs(node);
+      if (hasCycle) break;
     }
-  }
 
-  // Step 3: For each group, find root/cycle, and generate object
-  let hierarchies = [];
-  let largest_tree_root = "";
-  let largest_depth = 0;
-  let total_trees = 0, total_cycles = 0;
+    // Find root: node in this group that is not a child of any node
+    let rootNode = null;
+    for (const node of nodes) {
+      if (parentOf[node] === undefined) { rootNode = node; break; }
+    }
+    // Pure cycle: no natural root → lexicographically smallest
+    if (rootNode === null) {
+      rootNode = nodes.sort()[0];
+    }
 
-  // For each group, find roots (nodes without parent).
-  for (let group of groups) {
-    const groupNodes = new Set(group);
-
-    let groupRoots = [...groupNodes].filter(n => !childToParent.has(n));
-    let root = null;
-    if (groupRoots.length > 0) root = groupRoots.sort()[0];
-    else root = [...groupNodes].sort()[0];
-
-    // Cycle detection
-    let has_cycle = false;
-    let seen = new Set();
-    function dfsCycle(n) {
-      if (seen.has(n)) { has_cycle = true; return; }
-      seen.add(n);
-      for (let child of (parentToChildren.get(n) || [])) {
-        if (groupNodes.has(child)) dfsCycle(child);
+    if (hasCycle) {
+      hierarchies.push({ root: rootNode, tree: {}, has_cycle: true });
+    } else {
+      // Build nested tree object recursively
+      function buildTree(node) {
+        const obj = {};
+        for (const child of (children[node] || [])) {
+          obj[child] = buildTree(child);
+        }
+        return obj;
       }
-      seen.delete(n);
-    }
-    dfsCycle(root);
 
-    if (has_cycle) {
-      hierarchies.push({
-        root,
-        tree: {},
-        has_cycle: true
-      });
-      total_cycles += 1;
+      // Depth = longest root-to-leaf path (node count)
+      function calcDepth(node) {
+        const kids = children[node] || [];
+        if (kids.length === 0) return 1;
+        return 1 + Math.max(...kids.map(calcDepth));
+      }
+
+      const tree = { [rootNode]: buildTree(rootNode) };
+      const depth = calcDepth(rootNode);
+      hierarchies.push({ root: rootNode, tree, depth });
+    }
+  }
+
+  return hierarchies;
+}
+
+app.post("/bfhl", (req, res) => {
+  const { data } = req.body;
+
+  if (!Array.isArray(data)) {
+    return res.status(400).json({ error: "data must be an array" });
+  }
+
+  const invalid_entries = [];
+  const duplicate_edges = [];
+  const seenEdges = new Set();
+  const validEdges = [];
+
+  for (const raw of data) {
+    const trimmed = String(raw).trim();
+
+    if (!isValidEntry(trimmed)) {
+      invalid_entries.push(raw); // keep original value
       continue;
     }
 
-    // else: build tree recursively
-    function buildTree(n) {
-      const children = (parentToChildren.get(n) || []).filter(c => groupNodes.has(c));
-      let obj = {};
-      for (let c of children) {
-        obj[c] = buildTree(c);
+    if (seenEdges.has(trimmed)) {
+      // Only push first duplicate (not every repeat beyond the 2nd)
+      if (!duplicate_edges.includes(trimmed)) {
+        duplicate_edges.push(trimmed);
       }
-      return obj;
+      continue;
     }
 
-    let treeObj = {};
-    treeObj[root] = buildTree(root);
+    seenEdges.add(trimmed);
+    validEdges.push(trimmed);
+  }
 
-    // Calculate depth
-    function maxDepth(n) {
-      let children = Object.keys(treeObj[n] || {});
-      if (children.length === 0) return 0;
-      let depths = children.map(child => maxDepth(child));
-      return 1 + Math.max(...depths);
-    }
-    let depth = maxDepth(root);
+  const hierarchies = buildHierarchies(validEdges);
 
-    hierarchies.push({
-      root: root,
-      tree: treeObj,
-      depth: depth
-    });
-    total_trees += 1;
+  const nonCyclic = hierarchies.filter((h) => !h.has_cycle);
+  const cyclic    = hierarchies.filter((h) =>  h.has_cycle);
 
+  // Largest tree root: greatest depth; tie → lexicographically smaller root
+  let largest_tree_root = "";
+  let maxDepth = 0;
+  for (const h of nonCyclic) {
     if (
-      depth > largest_depth ||
-      (depth === largest_depth && root < largest_tree_root)
+      h.depth > maxDepth ||
+      (h.depth === maxDepth && h.root < largest_tree_root)
     ) {
-      largest_depth = depth;
-      largest_tree_root = root;
+      maxDepth = h.depth;
+      largest_tree_root = h.root;
     }
   }
 
-  return {
+  res.json({
     user_id: USER_ID,
-    email_id: EMAIL,
-    college_roll_number: ROLL,
+    email_id: EMAIL_ID,
+    college_roll_number: COLLEGE_ROLL_NUMBER,
     hierarchies,
     invalid_entries,
     duplicate_edges,
     summary: {
-      total_trees,
-      total_cycles,
-      largest_tree_root
-    }
-  };
-}
-
-app.get('/', (req, res) => {
-  res.status(200).json({ message: "BFHL API is running. Send POST to /bfhl" });
+      total_trees: nonCyclic.length,
+      total_cycles: cyclic.length,
+      largest_tree_root,
+    },
+  });
 });
 
-app.post('/bfhl', (req, res) => {
-  try {
-    const { data } = req.body;
-    if (!data || !Array.isArray(data)) {
-      return res.status(400).json({ error: "Missing/invalid 'data' array" });
-    }
-    const response = processData(data);
-    return res.json(response);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Listening on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`BFHL API running on port ${PORT}`));
