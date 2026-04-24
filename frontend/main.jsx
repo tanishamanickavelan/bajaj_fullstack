@@ -63,7 +63,7 @@ A->`);
     setResult(null); setErr(null); setLoading(true);
     try {
       const arr = input.split('\n').map(s=>s.trim()).filter(Boolean);
-     const response = await fetch('http://localhost:5000/bfhl', {
+     const response = await fetch('https://bajaj-backend-frgq.onrender.com/bfhl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({data: arr})
